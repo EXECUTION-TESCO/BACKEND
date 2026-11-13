@@ -1,0 +1,3 @@
+// Prints a new random JWT secret (512-bit). Put it in Backend/.env as JWT_SECRET=...
+import crypto from 'crypto';
+console.log(crypto.randomBytes(64).toString('base64url'));
