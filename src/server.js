@@ -19,7 +19,7 @@ import { todayStr } from './utils.js';
 const app = express();
 app.set('trust proxy', 1); // correct client IPs behind Hostinger / Render / Nginx (rate limiting)
 app.disable('x-powered-by');
-app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false, crossOriginResourcePolicy: { policy: 'same-site' } }));
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } })); // photos still require a valid login token
 app.use(cors({ origin: config.corsOrigin === '*' ? true : config.corsOrigin.split(',').map((s) => s.trim()) }));
 app.use(express.json({ limit: '1mb' }));
 
