@@ -23,7 +23,7 @@ export function projectFromHandover(h) {
     startDate: tl.tentativeStartDate || '',
     expectedDate: tl.tentativeCompletionDate || '',
     status: 'Not Started',
-    priority: 'Medium',
+    priority: h.priority || 'Medium', // priority chosen by Sales on the handover form
     engineerId: null, // Execution Head assigns a team member later, from Projects
     handoverId: h._id,
     handoverRef: h.ref || null,
