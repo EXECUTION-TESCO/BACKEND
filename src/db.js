@@ -58,14 +58,15 @@ const projectSchema = new mongoose.Schema({
   assignmentHistory: [{ _id: false, engineerId: String, at: Date, by: String }],
   assignedAt: Date, // when the project was last assigned to a team member
   // Source Sales handover (set when a project is auto-created from an ACCEPTED handover).
-  // handoverId is uniquely indexed so the same handover can never create two projects.
-  handoverId: { type: String, default: null, index: true },
+  // Uniquely indexed below (not here) so the same handover can never create two projects.
+  handoverId: { type: String, default: null },
   handoverRef: { type: String, default: null },
   // Attachment metadata copied from the handover so the assigned engineer can view/download them.
   handoverAttachments: [{ _id: false, fileId: String, filename: String, mime: String, size: Number }],
   createdBy: String,
 }, opts('projects'));
-projectSchema.index({ handoverId: 1 }, { unique: true, partialFilterExpression: { handoverId: { $type: 'string' } } });
+// Distinct name (not the auto "handoverId_1") so it never collides with an older index of that name.
+projectSchema.index({ handoverId: 1 }, { unique: true, partialFilterExpression: { handoverId: { $type: 'string' } }, name: 'handoverId_unique' });
 
 const photoSchema = new mongoose.Schema({ id: String, fileId: String, originalName: String, size: Number, contentType: String, uploadedAt: Date }, { _id: false });
 const reportSchema = new mongoose.Schema({
@@ -140,7 +141,14 @@ export async function connectDB() {
   });
   const db = mongoose.connection.db;
   bucket = new mongoose.mongo.GridFSBucket(db, { bucketName: P + 'photos' });
-  await Promise.all([User, Project, Report, Comment, Notification, Designation].map((m) => m.syncIndexes()));
+  // Drop any stale/legacy "handoverId_1" index so the new "handoverId_unique" can be created
+  // cleanly (an older build created a non-unique handoverId_1 that conflicts by name).
+  try { await db.collection(P + 'projects').dropIndex('handoverId_1'); } catch { /* not present — fine */ }
+  // Index building must never crash startup — the app works without them (idempotency is enforced
+  // in code too). Sync each model independently and only warn on failure.
+  await Promise.all([User, Project, Report, Comment, Notification, Designation].map(
+    (m) => m.syncIndexes().catch((e) => console.warn(`[index] ${m.modelName}: ${e.message}`))
+  ));
   // make sure the standard designations exist (never duplicates, never removes custom ones)
   await Promise.all(DEFAULT_DESIGNATIONS.map((name) => addDesignation(name)));
   return db;
