@@ -133,4 +133,15 @@ r.post('/:id/comments', ah(async (req, res) => {
   res.status(201).json(c);
 }));
 
+// Save a project's Work Schedule (Execution Head only). Additive — does not touch any
+// existing project field or workflow.
+r.put('/:id/work-schedule', requireHead, ah(async (req, res) => {
+  const p = await Project.findById(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  p.workSchedule = (req.body && req.body.workSchedule) || {};
+  p.markModified('workSchedule');
+  await p.save();
+  res.json((await decorateProjects([p]))[0]);
+}));
+
 export default r;

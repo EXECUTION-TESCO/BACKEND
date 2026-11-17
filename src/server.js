@@ -14,6 +14,7 @@ import dashboardRoutes from './routes/dashboard.js';
 import notificationRoutes from './routes/notifications.js';
 import exportRoutes from './routes/exports.js';
 import designationRoutes from './routes/designations.js';
+import handoverRoutes from './routes/handovers.js';
 import { todayStr } from './utils.js';
 
 const app = express();
@@ -32,6 +33,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/exports', exportRoutes);
 app.use('/api/designations', designationRoutes);
+app.use('/api/handovers', handoverRoutes);
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
 // Serve the built frontend (Frontend/dist) when present -> one server in production

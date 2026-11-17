@@ -54,6 +54,7 @@ const projectSchema = new mongoose.Schema({
   instructions: String,
   status: { type: String, enum: PROJECT_STATUSES, default: 'Not Started', index: true },
   progressPercent: { type: Number, default: 0 },
+  workSchedule: { type: mongoose.Schema.Types.Mixed, default: undefined }, // project Work Schedule (activities, timeline meta)
   assignmentHistory: [{ _id: false, engineerId: String, at: Date, by: String }],
   createdBy: String,
 }, opts('projects'));
