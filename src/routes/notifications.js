@@ -2,9 +2,27 @@ import { Router } from 'express';
 import { Notification, Project, Report } from '../db.js';
 import { requireAuth } from '../auth.js';
 import { todayStr, ah } from '../utils.js';
+import { handoverModels } from '../handover-model.js';
 
 const r = Router();
 r.use(requireAuth);
+
+const HO = handoverModels(process.env.HANDOVER_PREFIX || 'ho_');
+
+// Handover notifications (shared "ho_" collection) shown in the Execution Head's bell.
+async function handoverItems(user) {
+  if (user.role !== 'head') return []; // only the Execution Head reviews handovers
+  const list = await HO.HandoverNotification.find({ audience: 'execution' }).sort({ createdAt: -1 }).limit(50);
+  return list.map((n) => ({
+    id: 'ho-' + (n._id || n.id),
+    type: 'handover',
+    title: n.title,
+    message: n.message,
+    read: n.read,
+    createdAt: n.createdAt,
+    link: '/handovers',
+  }));
+}
 
 // "Pending daily update" reminders are calculated live, so they disappear once the update is submitted.
 async function pendingItems(user) {
@@ -21,16 +39,19 @@ async function pendingItems(user) {
 }
 
 r.get('/', ah(async (req, res) => {
-  const [mine, pending] = await Promise.all([
+  const [mine, pending, handovers] = await Promise.all([
     Notification.find({ userId: req.user._id }).sort({ createdAt: -1 }).limit(100),
     pendingItems(req.user),
+    handoverItems(req.user),
   ]);
-  const items = [...pending, ...mine.map((n) => n.toJSON())];
+  const rest = [...handovers, ...mine.map((n) => n.toJSON())].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const items = [...pending, ...rest];
   res.json({ items, unread: items.filter((n) => !n.read).length });
 }));
 
 r.post('/read-all', ah(async (req, res) => {
   await Notification.updateMany({ userId: req.user._id, read: false }, { $set: { read: true } });
+  if (req.user.role === 'head') await HO.HandoverNotification.updateMany({ audience: 'execution', read: false }, { $set: { read: true } });
   req.user.pendingSeenDate = todayStr();
   await req.user.save();
   res.json({ ok: true });
@@ -40,6 +61,8 @@ r.post('/:id/read', ah(async (req, res) => {
   if (req.params.id.startsWith('pending-')) {
     req.user.pendingSeenDate = todayStr();
     await req.user.save();
+  } else if (req.params.id.startsWith('ho-')) {
+    await HO.HandoverNotification.updateOne({ _id: req.params.id.slice(3) }, { $set: { read: true } });
   } else {
     await Notification.updateOne({ _id: req.params.id, userId: req.user._id }, { $set: { read: true } });
   }
