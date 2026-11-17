@@ -26,7 +26,7 @@ app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false,
 app.use(cors({ origin: config.corsOrigin === '*' ? true : config.corsOrigin.split(',').map((s) => s.trim()) }));
 app.use(express.json({ limit: '1mb' }));
 
-app.get('/api/health', (req, res) => res.status(dbState() === 'connected' ? 200 : 503).json({ ok: dbState() === 'connected', db: dbState(), today: todayStr() }));
+app.get('/api/health', (req, res) => res.status(dbState() === 'connected' ? 200 : 503).json({ ok: dbState() === 'connected', db: dbState(), today: todayStr(), build: 'handover-workflow-v2' }));
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/projects', projectRoutes);
