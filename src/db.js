@@ -121,16 +121,63 @@ const designationSchema = new mongoose.Schema({
 
 export const DEFAULT_DESIGNATIONS = ['FABRICATION ENGINEER', 'TECHNO COMMERCIAL MANAGER', 'SENIOR SITE ENGINEER'];
 
+// ---- Work Schedule tasks (linked to an accepted project; assigned to a team member) ----
+export const TASK_STATUSES = ['Not Started', 'In Progress', 'On Hold', 'Completed', 'Changes Requested'];
+export const TASK_PRIORITIES = ['Low', 'Medium', 'High'];
+
+const taskAttachmentSchema = new mongoose.Schema({
+  fileId: String, filename: String, mime: String, size: Number,
+  kind: { type: String, default: 'reference' }, // 'reference' (Head) | 'progress' (team)
+  uploadedBy: String, uploadedByName: String, uploadedAt: { type: Date, default: Date.now },
+}, { _id: false });
+const taskHistorySchema = new mongoose.Schema({
+  at: { type: Date, default: Date.now }, byId: String, byName: String, byRole: String, type: String, message: String,
+}, { _id: false });
+
+const taskSchema = new mongoose.Schema({
+  _id: idField,
+  projectId: { type: String, index: true, required: true }, // the accepted project (never a duplicate project)
+  projectName: String,
+  engineerId: { type: String, default: null, index: true }, // assigned team member
+  title: { type: String, required: true, trim: true },
+  description: String,
+  instructions: String,
+  priority: { type: String, enum: TASK_PRIORITIES, default: 'Medium' },
+  startDate: String, // YYYY-MM-DD
+  endDate: String,   // deadline YYYY-MM-DD
+  status: { type: String, enum: TASK_STATUSES, default: 'Not Started', index: true },
+  approvalState: { type: String, enum: ['', 'pending', 'approved', 'changes'], default: '' },
+  dependsOn: [String], // task ids that must finish first
+  attachments: [taskAttachmentSchema],
+  progressRemarks: String,
+  completionDetails: String,
+  delayReason: String,
+  extensionRequested: { type: Boolean, default: false },
+  extensionReason: String,
+  extensionUntil: String,
+  reviewRemarks: String, // Head's "request changes" remarks
+  assignedAt: Date,
+  completedAt: Date,
+  approvedAt: Date,
+  history: [taskHistorySchema], // append-only — never overwritten
+  createdBy: String,
+}, opts('tasks'));
+taskSchema.index({ engineerId: 1, status: 1 });
+taskSchema.index({ projectId: 1, createdAt: -1 });
+
 export const User = mongoose.model('User', userSchema);
 export const Designation = mongoose.model('Designation', designationSchema);
 export const Project = mongoose.model('Project', projectSchema);
 export const Report = mongoose.model('Report', reportSchema);
 export const Comment = mongoose.model('Comment', commentSchema);
 export const Notification = mongoose.model('Notification', notificationSchema);
+export const Task = mongoose.model('Task', taskSchema);
 
-let bucket;
+let bucket, taskBucket_;
 // Site photos are stored in MongoDB GridFS (bucket "ep_photos"), so they survive redeploys.
 export const photoBucket = () => bucket;
+// Task reference/progress files live in GridFS bucket "ep_taskfiles".
+export const taskBucket = () => taskBucket_;
 
 export async function connectDB() {
   mongoose.set('strictQuery', true);
@@ -141,12 +188,13 @@ export async function connectDB() {
   });
   const db = mongoose.connection.db;
   bucket = new mongoose.mongo.GridFSBucket(db, { bucketName: P + 'photos' });
+  taskBucket_ = new mongoose.mongo.GridFSBucket(db, { bucketName: P + 'taskfiles' });
   // Drop any stale/legacy "handoverId_1" index so the new "handoverId_unique" can be created
   // cleanly (an older build created a non-unique handoverId_1 that conflicts by name).
   try { await db.collection(P + 'projects').dropIndex('handoverId_1'); } catch { /* not present — fine */ }
   // Index building must never crash startup — the app works without them (idempotency is enforced
   // in code too). Sync each model independently and only warn on failure.
-  await Promise.all([User, Project, Report, Comment, Notification, Designation].map(
+  await Promise.all([User, Project, Report, Comment, Notification, Designation, Task].map(
     (m) => m.syncIndexes().catch((e) => console.warn(`[index] ${m.modelName}: ${e.message}`))
   ));
   // make sure the standard designations exist (never duplicates, never removes custom ones)

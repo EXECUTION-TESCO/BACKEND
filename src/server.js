@@ -15,6 +15,7 @@ import notificationRoutes from './routes/notifications.js';
 import exportRoutes from './routes/exports.js';
 import designationRoutes from './routes/designations.js';
 import handoverRoutes from './routes/handovers.js';
+import taskRoutes from './routes/tasks.js';
 import { handoverModels } from './handover-model.js';
 import { reconcileAcceptedHandovers } from './handover-projects.js';
 import { todayStr } from './utils.js';
@@ -36,6 +37,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/exports', exportRoutes);
 app.use('/api/designations', designationRoutes);
 app.use('/api/handovers', handoverRoutes);
+app.use('/api/tasks', taskRoutes);
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
 // Serve the built frontend (Frontend/dist) when present -> one server in production
