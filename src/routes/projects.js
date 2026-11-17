@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import mongoose from 'mongoose';
 import { Project, Report, Comment, User } from '../db.js';
 import { requireAuth, requireHead } from '../auth.js';
 import { PROJECT_STATUSES, PRIORITIES } from '../config.js';
@@ -7,6 +8,14 @@ import { notify, notifyHeads } from '../notify.js';
 
 const r = Router();
 r.use(requireAuth);
+
+// Shared handover-files GridFS bucket (ho_files) — used to stream a handover's attachments
+// to the assigned engineer through their project, without exposing the whole handover list.
+let hoBucket;
+const handoverFileBucket = () => {
+  if (!hoBucket) hoBucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, { bucketName: (process.env.HANDOVER_PREFIX || 'ho_') + 'files' });
+  return hoBucket;
+};
 
 const isHead = (u) => u.role === 'head';
 const scope = (u) => (isHead(u) ? {} : { engineerId: u._id }); // team members only see their own projects
@@ -66,6 +75,7 @@ r.post('/', requireHead, ah(async (req, res) => {
   const p = await Project.create({
     ...f,
     assignmentHistory: f.engineerId ? [{ engineerId: f.engineerId, at: new Date(), by: req.user._id }] : [],
+    assignedAt: f.engineerId ? new Date() : undefined,
     createdBy: req.user._id,
   });
   if (p.engineerId) await notify(p.engineerId, { type: 'assigned', title: 'New project assigned', message: `${p.name}${p.location ? ' – ' + p.location : ''} has been assigned to you.`, link: `/projects/${p._id}` });
@@ -81,7 +91,10 @@ r.put('/:id', requireHead, ah(async (req, res) => {
   const before = p.toObject();
   p.set(f);
   const reassigned = f.engineerId !== undefined && f.engineerId !== before.engineerId;
-  if (reassigned) p.assignmentHistory.push({ engineerId: f.engineerId, at: new Date(), by: req.user._id });
+  if (reassigned) {
+    p.assignmentHistory.push({ engineerId: f.engineerId, at: new Date(), by: req.user._id });
+    p.assignedAt = f.engineerId ? new Date() : p.assignedAt; // track latest assignment date
+  }
   await p.save();
 
   if (reassigned) {
@@ -142,6 +155,18 @@ r.put('/:id/work-schedule', requireHead, ah(async (req, res) => {
   p.markModified('workSchedule');
   await p.save();
   res.json((await decorateProjects([p]))[0]);
+}));
+
+// Stream a handover attachment that belongs to THIS project. Scoped with findVisible, so the
+// assigned engineer can open the Sales handover's files for their own project (and the Head for any).
+r.get('/:id/attachments/:fileId', ah(async (req, res) => {
+  const p = await findVisible(req.user, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  const att = (p.handoverAttachments || []).find((a) => a.fileId === req.params.fileId);
+  if (!att) return res.status(404).json({ error: 'Attachment not found' });
+  res.set('Content-Type', att.mime || 'application/octet-stream');
+  res.set('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="${encodeURIComponent(att.filename)}"`);
+  handoverFileBucket().openDownloadStream(new mongoose.Types.ObjectId(att.fileId)).on('error', () => res.status(404).end()).pipe(res);
 }));
 
 export default r;

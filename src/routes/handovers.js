@@ -4,7 +4,8 @@
 // shared "ho_" collections, so both portals always see the same record.
 import { Router } from 'express';
 import mongoose from 'mongoose';
-import { requireAuth } from '../auth.js';
+import { requireAuth, requireHead } from '../auth.js';
+import { Project } from '../db.js';
 import { ah } from '../utils.js';
 import { handoverModels, logActivity, HANDOVER_STATUSES } from '../handover-model.js';
 
@@ -33,6 +34,47 @@ async function notifyOwner(h, { type, title, message }) {
 
 // The Execution team sees every handover that has been sent (never Sales drafts).
 const VISIBLE = ['Submitted', 'Under Review', 'Changes Requested', 'Accepted', 'Rejected'];
+
+// ---- Build an Execution project from an accepted Sales handover ----
+function projectFromHandover(h) {
+  const d = h.details || {}, sc = h.scope || {}, tl = h.timeline || {};
+  const design = [sc.design3D && '3D', sc.design2D && '2D'].filter(Boolean).join(' + ');
+  const scopeText = [sc.typeOfProject, sc.projectSizeArea, design && `Design: ${design}`].filter(Boolean).join(' · ');
+  const instructions = [
+    h.ref && `From Sales handover ${h.ref}`,
+    d.salespersonName && `Salesperson: ${d.salespersonName}`,
+    d.contactDetails && `Contact: ${d.contactDetails}`,
+    tl.leadTimePromised && `Lead time promised: ${tl.leadTimePromised}`,
+  ].filter(Boolean).join('\n');
+  return {
+    name: h.projectName || d.projectLocation || h.clientName || h.ref || 'New Project',
+    client: h.clientName || d.clientName || '',
+    location: d.projectLocation || d.siteAddress || '',
+    scope: scopeText,
+    instructions,
+    startDate: tl.tentativeStartDate || '',
+    expectedDate: tl.tentativeCompletionDate || '',
+    status: 'Not Started',
+    priority: 'Medium',
+    engineerId: null, // Execution Head assigns a team member later, from Projects
+    handoverId: h._id,
+    handoverRef: h.ref || null,
+    handoverAttachments: (h.attachments || []).map((a) => ({ fileId: a.fileId, filename: a.filename, mime: a.mime, size: a.size })),
+  };
+}
+
+// Create the Execution project for an accepted handover — idempotent (never duplicates,
+// even if the same handover is processed twice or two requests race).
+async function ensureProjectForHandover(h, byUserId) {
+  const existing = await Project.findOne({ handoverId: h._id });
+  if (existing) return existing;
+  try {
+    return await Project.create({ ...projectFromHandover(h), createdBy: byUserId });
+  } catch (e) {
+    if (e && e.code === 11000) return Project.findOne({ handoverId: h._id }); // unique index caught a race
+    throw e;
+  }
+}
 
 // ---- Dashboard stats ----
 r.get('/dashboard', ah(async (req, res) => {
@@ -93,8 +135,10 @@ r.get('/:id/attachments/:fileId', ah(async (req, res) => {
   fileBucket().openDownloadStream(new mongoose.Types.ObjectId(att.fileId)).on('error', () => res.status(404).end()).pipe(res);
 }));
 
-// ---- Review: accept / reject / request-changes / start-review ----
-r.post('/:id/review', ah(async (req, res) => {
+// ---- Review: accept / reject (EXECUTION HEAD ONLY) ----
+// Accept  → handover marked Accepted AND an Execution project is created (idempotent).
+// Reject  → handover marked Rejected; nothing is added to Projects.
+r.post('/:id/review', requireHead, ah(async (req, res) => {
   const h = await Handover.findById(req.params.id);
   if (!h || !VISIBLE.includes(h.status)) return res.status(404).json({ error: 'Handover not found' });
   const action = req.body.action;
@@ -102,32 +146,36 @@ r.post('/:id/review', ah(async (req, res) => {
   const from = h.status;
   const by = actorOf(req.user);
 
-  const map = {
-    'start-review': { allow: ['Submitted'], to: 'Under Review' },
-    accept: { allow: ['Submitted', 'Under Review'], to: 'Accepted' },
-    reject: { allow: ['Submitted', 'Under Review'], to: 'Rejected', needMsg: true },
-    'request-changes': { allow: ['Submitted', 'Under Review'], to: 'Changes Requested', needMsg: true },
-  };
-  const step = map[action];
-  if (!step) return res.status(400).json({ error: 'Unknown action' });
-  if (!step.allow.includes(h.status)) return res.status(400).json({ error: `Cannot ${action.replace('-', ' ')} a handover that is "${h.status}"` });
-  if (step.needMsg && !message) return res.status(400).json({ error: action === 'reject' ? 'Please give a reason for rejecting' : 'Please describe the changes needed' });
+  // Only a handover that is still pending (just arrived / under review) can be accepted or rejected.
+  if (!['Submitted', 'Under Review'].includes(h.status)) {
+    return res.status(400).json({ error: `This handover is already "${h.status}"` });
+  }
 
-  h.status = step.to;
+  let project = null;
+  if (action === 'accept') {
+    h.status = 'Accepted';
+    project = await ensureProjectForHandover(h, req.user._id); // create the project (no duplicates)
+  } else if (action === 'reject') {
+    if (!message) return res.status(400).json({ error: 'Please give a reason for rejecting' });
+    h.status = 'Rejected';
+  } else {
+    return res.status(400).json({ error: 'Unknown action' });
+  }
+
   h.reviewedBy = by;
   h.reviewedAt = new Date();
   h.lastActor = by;
   await h.save();
-  await logActivity(HO, h, { type: 'status', fromStatus: from, toStatus: step.to, message: message || `Marked ${step.to} by ${req.user.name}`, by });
+  await logActivity(HO, h, { type: 'status', fromStatus: from, toStatus: h.status, message: message || `${h.status} by ${req.user.name}`, by });
 
-  const titles = {
-    'start-review': `Handover ${h.ref} is under review`,
-    accept: `Handover ${h.ref} accepted`,
-    reject: `Handover ${h.ref} rejected`,
-    'request-changes': `Changes requested on ${h.ref}`,
-  };
-  await notifyOwner(h, { type: 'status', title: titles[action], message: message || `${req.user.name} marked it ${step.to}` });
-  res.json({ handover: h.toJSON() });
+  // Tell the Sales owner the outcome.
+  await notifyOwner(h, {
+    type: 'status',
+    title: action === 'accept' ? `Handover ${h.ref} accepted` : `Handover ${h.ref} rejected`,
+    message: message || `${req.user.name} marked it ${h.status}`,
+  });
+
+  res.json({ handover: h.toJSON(), projectId: project ? String(project._id || project.id) : null });
 }));
 
 // ---- Comment back to the Sales team ----

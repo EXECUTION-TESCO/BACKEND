@@ -56,8 +56,16 @@ const projectSchema = new mongoose.Schema({
   progressPercent: { type: Number, default: 0 },
   workSchedule: { type: mongoose.Schema.Types.Mixed, default: undefined }, // project Work Schedule (activities, timeline meta)
   assignmentHistory: [{ _id: false, engineerId: String, at: Date, by: String }],
+  assignedAt: Date, // when the project was last assigned to a team member
+  // Source Sales handover (set when a project is auto-created from an ACCEPTED handover).
+  // handoverId is uniquely indexed so the same handover can never create two projects.
+  handoverId: { type: String, default: null, index: true },
+  handoverRef: { type: String, default: null },
+  // Attachment metadata copied from the handover so the assigned engineer can view/download them.
+  handoverAttachments: [{ _id: false, fileId: String, filename: String, mime: String, size: Number }],
   createdBy: String,
 }, opts('projects'));
+projectSchema.index({ handoverId: 1 }, { unique: true, partialFilterExpression: { handoverId: { $type: 'string' } } });
 
 const photoSchema = new mongoose.Schema({ id: String, fileId: String, originalName: String, size: Number, contentType: String, uploadedAt: Date }, { _id: false });
 const reportSchema = new mongoose.Schema({
