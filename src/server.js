@@ -15,6 +15,8 @@ import notificationRoutes from './routes/notifications.js';
 import exportRoutes from './routes/exports.js';
 import designationRoutes from './routes/designations.js';
 import handoverRoutes from './routes/handovers.js';
+import { handoverModels } from './handover-model.js';
+import { reconcileAcceptedHandovers } from './handover-projects.js';
 import { todayStr } from './utils.js';
 
 const app = express();
@@ -56,6 +58,8 @@ async function start() {
   try {
     const db = await connectDB();
     console.log(`MongoDB connected → database "${db.databaseName}" (collections prefixed "${config.collectionPrefix}")`);
+    // Backfill projects for any handover that was accepted before this feature / before a restart.
+    await reconcileAcceptedHandovers(handoverModels(process.env.HANDOVER_PREFIX || 'ho_'));
   } catch (e) {
     console.error('\n[MongoDB] Could not connect:', e.message, '\nCheck MONGO_URI in Backend/.env and that this IP is allowed in Atlas → Network Access.\n');
     process.exit(1);

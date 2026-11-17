@@ -5,9 +5,9 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import { requireAuth, requireHead } from '../auth.js';
-import { Project } from '../db.js';
 import { ah } from '../utils.js';
 import { handoverModels, logActivity, HANDOVER_STATUSES } from '../handover-model.js';
+import { ensureProjectForHandover } from '../handover-projects.js';
 
 const PREFIX = process.env.HANDOVER_PREFIX || 'ho_';
 const HO = handoverModels(PREFIX);
@@ -34,47 +34,6 @@ async function notifyOwner(h, { type, title, message }) {
 
 // The Execution team sees every handover that has been sent (never Sales drafts).
 const VISIBLE = ['Submitted', 'Under Review', 'Changes Requested', 'Accepted', 'Rejected'];
-
-// ---- Build an Execution project from an accepted Sales handover ----
-function projectFromHandover(h) {
-  const d = h.details || {}, sc = h.scope || {}, tl = h.timeline || {};
-  const design = [sc.design3D && '3D', sc.design2D && '2D'].filter(Boolean).join(' + ');
-  const scopeText = [sc.typeOfProject, sc.projectSizeArea, design && `Design: ${design}`].filter(Boolean).join(' · ');
-  const instructions = [
-    h.ref && `From Sales handover ${h.ref}`,
-    d.salespersonName && `Salesperson: ${d.salespersonName}`,
-    d.contactDetails && `Contact: ${d.contactDetails}`,
-    tl.leadTimePromised && `Lead time promised: ${tl.leadTimePromised}`,
-  ].filter(Boolean).join('\n');
-  return {
-    name: h.projectName || d.projectLocation || h.clientName || h.ref || 'New Project',
-    client: h.clientName || d.clientName || '',
-    location: d.projectLocation || d.siteAddress || '',
-    scope: scopeText,
-    instructions,
-    startDate: tl.tentativeStartDate || '',
-    expectedDate: tl.tentativeCompletionDate || '',
-    status: 'Not Started',
-    priority: 'Medium',
-    engineerId: null, // Execution Head assigns a team member later, from Projects
-    handoverId: h._id,
-    handoverRef: h.ref || null,
-    handoverAttachments: (h.attachments || []).map((a) => ({ fileId: a.fileId, filename: a.filename, mime: a.mime, size: a.size })),
-  };
-}
-
-// Create the Execution project for an accepted handover — idempotent (never duplicates,
-// even if the same handover is processed twice or two requests race).
-async function ensureProjectForHandover(h, byUserId) {
-  const existing = await Project.findOne({ handoverId: h._id });
-  if (existing) return existing;
-  try {
-    return await Project.create({ ...projectFromHandover(h), createdBy: byUserId });
-  } catch (e) {
-    if (e && e.code === 11000) return Project.findOne({ handoverId: h._id }); // unique index caught a race
-    throw e;
-  }
-}
 
 // ---- Dashboard stats ----
 r.get('/dashboard', ah(async (req, res) => {
