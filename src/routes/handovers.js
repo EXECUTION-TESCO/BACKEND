@@ -8,6 +8,7 @@ import { requireAuth, requireHead } from '../auth.js';
 import { ah } from '../utils.js';
 import { handoverModels, logActivity, HANDOVER_STATUSES } from '../handover-model.js';
 import { ensureProjectForHandover } from '../handover-projects.js';
+import { Project } from '../db.js';
 
 const PREFIX = process.env.HANDOVER_PREFIX || 'ho_';
 const HO = handoverModels(PREFIX);
@@ -25,6 +26,18 @@ const fileBucket = () => {
 
 const actorOf = (user) => ({ id: user._id || user.id, name: user.name, role: user.role, portal: 'execution' });
 const clean = (v) => (typeof v === 'string' ? v.trim() : v ?? '');
+const isHead = (u) => u.role === 'head';
+
+// VISIBILITY: the Execution Head sees every handover. A team member sees ONLY handovers whose
+// Execution project has been assigned to them (never unassigned or other members' handovers).
+async function assignedHandoverIds(userId) {
+  const projs = await Project.find({ engineerId: userId, handoverId: { $ne: null } }, { handoverId: 1 }).lean();
+  return [...new Set(projs.map((p) => p.handoverId).filter(Boolean))];
+}
+async function canSeeHandover(user, handoverId) {
+  if (isHead(user)) return true;
+  return !!(await Project.exists({ handoverId, engineerId: user._id }));
+}
 
 // Notify the sales owner of a handover.
 async function notifyOwner(h, { type, title, message }) {
@@ -35,8 +48,9 @@ async function notifyOwner(h, { type, title, message }) {
 // The Execution team sees every handover that has been sent (never Sales drafts).
 const VISIBLE = ['Submitted', 'Under Review', 'Changes Requested', 'Accepted', 'Rejected'];
 
-// ---- Dashboard stats ----
+// ---- Dashboard stats (Head only) ----
 r.get('/dashboard', ah(async (req, res) => {
+  if (!isHead(req.user)) return res.json({ total: 0, submitted: 0, underReview: 0, changesRequested: 0, accepted: 0, rejected: 0, pending: 0 });
   const all = await Handover.find({ status: { $in: VISIBLE } }).lean();
   const by = (s) => all.filter((h) => h.status === s).length;
   res.json({
@@ -50,18 +64,19 @@ r.get('/dashboard', ah(async (req, res) => {
   });
 }));
 
-// ---- Handover notifications (shown in the Execution Handovers page) ----
+// ---- Handover notifications (Head only — these are the "new handover from Sales" alerts) ----
 r.get('/notifications', ah(async (req, res) => {
+  if (!isHead(req.user)) return res.json({ items: [], unread: 0 });
   const items = await HandoverNotification.find({ audience: 'execution' }).sort({ createdAt: -1 }).limit(100);
   const out = items.map((n) => n.toJSON());
   res.json({ items: out, unread: out.filter((n) => !n.read).length });
 }));
 r.post('/notifications/read-all', ah(async (req, res) => {
-  await HandoverNotification.updateMany({ audience: 'execution', read: false }, { $set: { read: true } });
+  if (isHead(req.user)) await HandoverNotification.updateMany({ audience: 'execution', read: false }, { $set: { read: true } });
   res.json({ ok: true });
 }));
 r.post('/notifications/:id/read', ah(async (req, res) => {
-  await HandoverNotification.updateOne({ _id: req.params.id, audience: 'execution' }, { $set: { read: true } });
+  if (isHead(req.user)) await HandoverNotification.updateOne({ _id: req.params.id, audience: 'execution' }, { $set: { read: true } });
   res.json({ ok: true });
 }));
 
@@ -69,6 +84,8 @@ r.post('/notifications/:id/read', ah(async (req, res) => {
 r.get('/', ah(async (req, res) => {
   const filter = { status: { $in: VISIBLE } };
   if (req.query.status && HANDOVER_STATUSES.includes(req.query.status) && VISIBLE.includes(req.query.status)) filter.status = req.query.status;
+  // Team members only see handovers for projects assigned to them.
+  if (!isHead(req.user)) filter._id = { $in: await assignedHandoverIds(req.user._id) };
   const q = clean(req.query.q).toLowerCase();
   let list = await Handover.find(filter).sort({ updatedAt: -1 }).lean();
   if (q) list = list.filter((h) => [h.ref, h.clientName, h.projectName, h.details?.proposalRefNo, h.details?.leadId, h.createdBy?.name].filter(Boolean).join(' ').toLowerCase().includes(q));
@@ -79,6 +96,7 @@ r.get('/', ah(async (req, res) => {
 r.get('/:id', ah(async (req, res) => {
   const h = await Handover.findById(req.params.id);
   if (!h || !VISIBLE.includes(h.status)) return res.status(404).json({ error: 'Handover not found' });
+  if (!(await canSeeHandover(req.user, h._id))) return res.status(404).json({ error: 'Handover not found' });
   const activity = await HandoverActivity.find({ handoverId: h._id }).sort({ createdAt: 1 });
   res.json({ handover: h.toJSON(), activity: activity.map((a) => a.toJSON()) });
 }));
@@ -87,6 +105,7 @@ r.get('/:id', ah(async (req, res) => {
 r.get('/:id/attachments/:fileId', ah(async (req, res) => {
   const h = await Handover.findById(req.params.id);
   if (!h || !VISIBLE.includes(h.status)) return res.status(404).json({ error: 'Handover not found' });
+  if (!(await canSeeHandover(req.user, h._id))) return res.status(404).json({ error: 'Handover not found' });
   const att = (h.attachments || []).find((a) => a.fileId === req.params.fileId);
   if (!att) return res.status(404).json({ error: 'Attachment not found' });
   res.set('Content-Type', att.mime || 'application/octet-stream');
@@ -141,6 +160,7 @@ r.post('/:id/review', requireHead, ah(async (req, res) => {
 r.post('/:id/comments', ah(async (req, res) => {
   const h = await Handover.findById(req.params.id);
   if (!h || !VISIBLE.includes(h.status)) return res.status(404).json({ error: 'Handover not found' });
+  if (!(await canSeeHandover(req.user, h._id))) return res.status(404).json({ error: 'Handover not found' });
   const message = clean(req.body.message);
   if (!message) return res.status(400).json({ error: 'Enter a comment' });
   await logActivity(HO, h, { type: 'comment', message, by: actorOf(req.user) });
