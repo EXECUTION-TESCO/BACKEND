@@ -5,9 +5,12 @@ import { requireAuth, requireHead } from '../auth.js';
 import { PROJECT_STATUSES, PRIORITIES } from '../config.js';
 import { clean, decorateProjects, todayStr, isDelayed, ah } from '../utils.js';
 import { notify, notifyHeads } from '../notify.js';
+import { handoverModels, logActivity } from '../handover-model.js';
 
 const r = Router();
 r.use(requireAuth);
+
+const HO = handoverModels(process.env.HANDOVER_PREFIX || 'ho_');
 
 // Shared handover-files GridFS bucket (ho_files) — used to stream a handover's attachments
 // to the assigned engineer through their project, without exposing the whole handover list.
@@ -16,6 +19,26 @@ const handoverFileBucket = () => {
   if (!hoBucket) hoBucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, { bucketName: (process.env.HANDOVER_PREFIX || 'ho_') + 'files' });
   return hoBucket;
 };
+
+// When a handover-sourced project is assigned to an engineer, record it on the handover's
+// history (shown to the Sales team) including the engineer's mobile number, and notify Sales.
+async function logHandoverAssignment(project, engineer, byUser) {
+  if (!project.handoverId || !engineer) return;
+  try {
+    const h = await HO.Handover.findById(project.handoverId);
+    if (!h) return;
+    const actor = { id: byUser._id, name: byUser.name, role: byUser.role, portal: 'execution' };
+    const mobile = engineer.phone ? ` · Mobile: ${engineer.phone}` : '';
+    await logActivity(HO, h, { type: 'assignment', message: `Project assigned to ${engineer.name}${mobile}`, by: actor });
+    if (h.createdBy && h.createdBy.id) {
+      await HO.HandoverNotification.create({
+        audience: 'sales', userId: h.createdBy.id, handoverId: h._id, ref: h.ref || null,
+        type: 'assignment', title: `Project assigned — ${h.ref || h.projectName || 'handover'}`,
+        message: `${engineer.name}${mobile}`, link: '/handovers',
+      });
+    }
+  } catch (e) { /* history logging is non-fatal */ }
+}
 
 const isHead = (u) => u.role === 'head';
 const scope = (u) => (isHead(u) ? {} : { engineerId: u._id }); // team members only see their own projects
@@ -98,7 +121,11 @@ r.put('/:id', requireHead, ah(async (req, res) => {
   await p.save();
 
   if (reassigned) {
-    if (p.engineerId) await notify(p.engineerId, { type: 'assigned', title: 'Project assigned to you', message: `${p.name} has been ${before.engineerId ? 're' : ''}assigned to you.`, link: `/projects/${p._id}` });
+    if (p.engineerId) {
+      await notify(p.engineerId, { type: 'assigned', title: 'Project assigned to you', message: `${p.name} has been ${before.engineerId ? 're' : ''}assigned to you.`, link: `/projects/${p._id}` });
+      const eng = await User.findById(p.engineerId, { name: 1, phone: 1 }).lean();
+      await logHandoverAssignment(p, eng, req.user); // record on the Sales handover history (with mobile)
+    }
     if (before.engineerId) await notify(before.engineerId, { type: 'reassigned', title: 'Project reassigned', message: `${p.name} has been moved to another team member.` });
   } else if (p.engineerId) {
     const labels = { name: 'name', client: 'client', location: 'location', scope: 'scope of work', instructions: 'work instructions', startDate: 'start date', expectedDate: 'expected completion date', priority: 'priority' };
