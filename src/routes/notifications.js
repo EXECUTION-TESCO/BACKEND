@@ -3,11 +3,28 @@ import { Notification, Project, Report } from '../db.js';
 import { requireAuth } from '../auth.js';
 import { todayStr, ah } from '../utils.js';
 import { handoverModels } from '../handover-model.js';
+import { materialModels } from '../material-request-model.js';
 
 const r = Router();
 r.use(requireAuth);
 
 const HO = handoverModels(process.env.HANDOVER_PREFIX || 'ho_');
+const MAT = materialModels();
+
+// Material requirements the current user raised, whose Procurement status changed and
+// the user hasn't seen yet (requesterSeen === false). Shown in everyone's bell.
+async function materialItems(user) {
+  const list = await MAT.MaterialRequest.find({ 'createdBy.id': user._id, requesterSeen: false }).sort({ updatedAt: -1 }).limit(50);
+  return list.map((n) => ({
+    id: 'mr-' + (n._id || n.id),
+    type: 'material',
+    title: `Material ${n.status.toLowerCase()} — ${n.material}`,
+    message: `${n.projectName || 'Project'}${n.poRef ? ' · PO ' + n.poRef : ''}${n.status === 'Rejected' && n.rejectReason ? ' · ' + n.rejectReason : ''}`,
+    read: false,
+    createdAt: n.updatedAt,
+    link: `/projects/${n.projectId}`,
+  }));
+}
 
 // Handover notifications (shared "ho_" collection) shown in the Execution Head's bell.
 async function handoverItems(user) {
@@ -39,12 +56,13 @@ async function pendingItems(user) {
 }
 
 r.get('/', ah(async (req, res) => {
-  const [mine, pending, handovers] = await Promise.all([
+  const [mine, pending, handovers, materials] = await Promise.all([
     Notification.find({ userId: req.user._id }).sort({ createdAt: -1 }).limit(100),
     pendingItems(req.user),
     handoverItems(req.user),
+    materialItems(req.user),
   ]);
-  const rest = [...handovers, ...mine.map((n) => n.toJSON())].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const rest = [...handovers, ...materials, ...mine.map((n) => n.toJSON())].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   const items = [...pending, ...rest];
   res.json({ items, unread: items.filter((n) => !n.read).length });
 }));
@@ -52,6 +70,7 @@ r.get('/', ah(async (req, res) => {
 r.post('/read-all', ah(async (req, res) => {
   await Notification.updateMany({ userId: req.user._id, read: false }, { $set: { read: true } });
   if (req.user.role === 'head') await HO.HandoverNotification.updateMany({ audience: 'execution', read: false }, { $set: { read: true } });
+  await MAT.MaterialRequest.updateMany({ 'createdBy.id': req.user._id, requesterSeen: false }, { $set: { requesterSeen: true } });
   req.user.pendingSeenDate = todayStr();
   await req.user.save();
   res.json({ ok: true });
@@ -63,6 +82,8 @@ r.post('/:id/read', ah(async (req, res) => {
     await req.user.save();
   } else if (req.params.id.startsWith('ho-')) {
     await HO.HandoverNotification.updateOne({ _id: req.params.id.slice(3) }, { $set: { read: true } });
+  } else if (req.params.id.startsWith('mr-')) {
+    await MAT.MaterialRequest.updateOne({ _id: req.params.id.slice(3), 'createdBy.id': req.user._id }, { $set: { requesterSeen: true } });
   } else {
     await Notification.updateOne({ _id: req.params.id, userId: req.user._id }, { $set: { read: true } });
   }

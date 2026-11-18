@@ -14,6 +14,7 @@ export function projectFromHandover(h) {
     d.contactDetails && `Contact: ${d.contactDetails}`,
     tl.leadTimePromised && `Lead time promised: ${tl.leadTimePromised}`,
   ].filter(Boolean).join('\n');
+  const pr = h.pricing || {};
   return {
     name: h.projectName || d.projectLocation || h.clientName || h.ref || 'New Project',
     client: h.clientName || d.clientName || '',
@@ -23,6 +24,11 @@ export function projectFromHandover(h) {
     startDate: tl.tentativeStartDate || '',
     expectedDate: tl.tentativeCompletionDate || '',
     status: 'Not Started',
+    // Total value + size carried from the handover (view-only in Execution).
+    projectValue: Number(h.projectValue) || Number(pr.quotedPrice) || 0,
+    length: Number(sc.length) || 0,
+    width: Number(sc.width) || 0,
+    unit: sc.unit || 'ft',
     priority: h.priority || 'Medium', // priority chosen by Sales on the handover form
     engineerId: null, // Execution Head assigns a team member later, from Projects
     handoverId: h._id,
@@ -49,13 +55,24 @@ export async function ensureProjectForHandover(h, byUserId) {
 export async function reconcileAcceptedHandovers(HO) {
   try {
     const accepted = await HO.Handover.find({ status: 'Accepted' }).lean();
-    let created = 0;
+    let created = 0, patched = 0;
     for (const h of accepted) {
-      if (await Project.exists({ handoverId: h._id })) continue;
-      await ensureProjectForHandover(h, (h.reviewedBy && h.reviewedBy.id) || (h.createdBy && h.createdBy.id) || null);
-      created++;
+      const existing = await Project.findOne({ handoverId: h._id });
+      if (!existing) {
+        await ensureProjectForHandover(h, (h.reviewedBy && h.reviewedBy.id) || (h.createdBy && h.createdBy.id) || null);
+        created++;
+        continue;
+      }
+      // Backfill commercial/size values onto projects created before these fields existed.
+      const m = projectFromHandover(h);
+      const set = {};
+      if (!existing.projectValue && m.projectValue) set.projectValue = m.projectValue;
+      if (!existing.length && m.length) set.length = m.length;
+      if (!existing.width && m.width) set.width = m.width;
+      if (!existing.unit && m.unit) set.unit = m.unit;
+      if (Object.keys(set).length) { await Project.updateOne({ _id: existing._id }, { $set: set }); patched++; }
     }
-    if (created) console.log(`[handovers] Backfilled ${created} project(s) for already-accepted handover(s).`);
+    if (created || patched) console.log(`[handovers] Backfilled ${created} project(s), updated ${patched} with value/size.`);
     return created;
   } catch (e) {
     console.error('[handovers] reconcile failed:', e.message);

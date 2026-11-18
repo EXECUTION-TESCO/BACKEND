@@ -41,6 +41,22 @@ const userSchema = new mongoose.Schema({
 }, opts('users'));
 userSchema.index({ employeeId: 1 }, { unique: true, partialFilterExpression: { employeeId: { $type: 'string', $gt: '' } } });
 
+// A daily task the Execution Head assigns to a team member on a project.
+export const TASK_STATUSES = ['To Do', 'In Progress', 'Done'];
+const taskJSON = { virtuals: false, versionKey: false, transform(doc, ret) { ret.id = ret._id; delete ret._id; return ret; } };
+const dailyTaskSchema = new mongoose.Schema({
+  _id: idField,
+  title: { type: String, required: true, trim: true },
+  details: { type: String, default: '' },
+  dueDate: { type: String, default: '' },            // YYYY-MM-DD
+  status: { type: String, enum: TASK_STATUSES, default: 'To Do' },
+  assigneeId: { type: String, default: null },        // the team member responsible
+  createdBy: String,
+  completedAt: Date,
+  // Recorded each time the Head moves this task to another member.
+  reassignHistory: [{ _id: false, fromId: String, toId: String, at: Date, by: String }],
+}, { timestamps: true, toJSON: taskJSON, toObject: taskJSON });
+
 const projectSchema = new mongoose.Schema({
   _id: idField,
   name: { type: String, required: true, trim: true },
@@ -50,6 +66,11 @@ const projectSchema = new mongoose.Schema({
   startDate: String,
   expectedDate: String,
   scope: String,
+  // Commercial & size values carried over from the Sales handover (view-only in Execution).
+  projectValue: { type: Number, default: 0 },   // total quoted value of the project
+  length: { type: Number, default: 0 },          // in `unit`
+  width: { type: Number, default: 0 },
+  unit: { type: String, default: 'ft' },         // ft | m
   priority: { type: String, enum: PRIORITIES, default: 'Medium' },
   instructions: String,
   status: { type: String, enum: PROJECT_STATUSES, default: 'Not Started', index: true },
@@ -63,6 +84,8 @@ const projectSchema = new mongoose.Schema({
   handoverRef: { type: String, default: null },
   // Attachment metadata copied from the handover so the assigned engineer can view/download them.
   handoverAttachments: [{ _id: false, fileId: String, filename: String, mime: String, size: Number }],
+  // Daily tasks the Head assigns to team members (Phase 2).
+  dailyTasks: [dailyTaskSchema],
   createdBy: String,
 }, opts('projects'));
 // Distinct name (not the auto "handoverId_1") so it never collides with an older index of that name.

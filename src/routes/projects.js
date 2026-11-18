@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
-import { Project, Report, Comment, User } from '../db.js';
+import { Project, Report, Comment, User, TASK_STATUSES } from '../db.js';
 import { requireAuth, requireHead } from '../auth.js';
 import { PROJECT_STATUSES, PRIORITIES } from '../config.js';
 import { clean, decorateProjects, todayStr, isDelayed, ah } from '../utils.js';
@@ -52,21 +52,41 @@ function readFields(body) {
   return f;
 }
 const validEngineer = async (id) => !id || !!(await User.exists({ _id: id, role: 'engineer', active: true }));
-const findVisible = (u, id) => Project.findOne({ _id: id, ...scope(u) });
+// A member can open a project if they are its engineer OR they have a daily task assigned on it.
+const findVisible = (u, id) => Project.findOne(isHead(u) ? { _id: id } : { _id: id, $or: [{ engineerId: u._id }, { 'dailyTasks.assigneeId': u._id }] });
+
+// Write a read-only snapshot of a project's daily tasks onto its source handover so the Sales
+// team can see task progress (names resolved here; Sales never queries Execution's users).
+async function syncTasksToHandover(project) {
+  if (!project.handoverId) return;
+  try {
+    const ids = [...new Set((project.dailyTasks || []).map((t) => t.assigneeId).filter(Boolean))];
+    const names = Object.fromEntries((await User.find({ _id: { $in: ids } }, { name: 1 }).lean()).map((u) => [u._id, u.name]));
+    const snapshot = (project.dailyTasks || []).map((t) => ({
+      taskId: String(t._id), title: t.title, status: t.status,
+      assigneeName: names[t.assigneeId] || 'Unassigned', dueDate: t.dueDate || '', updatedAt: t.updatedAt || new Date(),
+    }));
+    await HO.Handover.updateOne({ _id: project.handoverId }, { $set: { executionTasks: snapshot } });
+  } catch (e) { /* snapshot is non-fatal */ }
+}
 
 r.get('/meta', (req, res) => res.json({ statuses: PROJECT_STATUSES, priorities: PRIORITIES }));
 
 r.get('/', ah(async (req, res) => {
   const today = todayStr();
   const { status, engineerId, q } = req.query;
-  const filter = { ...scope(req.user) };
+  const filter = {};
+  const and = [];
+  // Members see projects they are the engineer of OR have a daily task assigned on.
+  if (!isHead(req.user)) and.push({ $or: [{ engineerId: req.user._id }, { 'dailyTasks.assigneeId': req.user._id }] });
   if (status === 'Active') filter.status = { $ne: 'Completed' };
   else if (status && status !== 'Delayed') filter.status = status;
   if (engineerId && isHead(req.user)) filter.engineerId = engineerId;
   if (q) {
     const rx = new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    filter.$or = [{ name: rx }, { client: rx }, { location: rx }];
+    and.push({ $or: [{ name: rx }, { client: rx }, { location: rx }] });
   }
+  if (and.length) filter.$and = and;
   let list = await Project.find(filter).lean();
   list = list.map((p) => ({ ...p, id: p._id }));
   if (status === 'Delayed') list = list.filter((p) => isDelayed(p, today));
@@ -85,9 +105,18 @@ r.get('/:id', ah(async (req, res) => {
     Comment.find({ projectId: p._id }).sort({ createdAt: 1 }),
     decorateProjects([p]),
   ]);
-  const ids = [...new Set((p.assignmentHistory || []).flatMap((h) => [h.engineerId, h.by]).filter(Boolean))];
+  const ids = [...new Set([
+    ...(p.assignmentHistory || []).flatMap((h) => [h.engineerId, h.by]),
+    ...(p.dailyTasks || []).flatMap((t) => [t.assigneeId, t.createdBy, ...(t.reassignHistory || []).flatMap((r) => [r.fromId, r.toId, r.by])]),
+  ].filter(Boolean))];
   const names = Object.fromEntries((await User.find({ _id: { $in: ids } }, { name: 1 }).lean()).map((u) => [u._id, u.name]));
   const assignmentHistory = (p.assignmentHistory || []).map((h) => ({ engineerId: h.engineerId, at: h.at, by: h.by, engineerName: names[h.engineerId] || 'Unassigned', byName: names[h.by] || '' }));
+  // Enrich daily tasks with resolved member names (ids stay for the UI to match the current user).
+  project.dailyTasks = (project.dailyTasks || []).map((t) => ({
+    ...t,
+    assigneeName: names[t.assigneeId] || 'Unassigned',
+    reassignHistory: (t.reassignHistory || []).map((r) => ({ ...r, fromName: names[r.fromId] || 'Unassigned', toName: names[r.toId] || 'Unassigned', byName: names[r.by] || '' })),
+  }));
   res.json({ project, reports, comments, assignmentHistory: isHead(req.user) ? assignmentHistory : [] });
 }));
 
@@ -194,6 +223,103 @@ r.get('/:id/attachments/:fileId', ah(async (req, res) => {
   res.set('Content-Type', att.mime || 'application/octet-stream');
   res.set('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="${encodeURIComponent(att.filename)}"`);
   handoverFileBucket().openDownloadStream(new mongoose.Types.ObjectId(att.fileId)).on('error', () => res.status(404).end()).pipe(res);
+}));
+
+// ---------- Daily Tasks (Phase 2) ----------
+
+// Decorate a project and resolve member names on its daily tasks (same shape as GET /:id).
+async function enrichedProject(p) {
+  const [project] = await decorateProjects([p]);
+  const ids = [...new Set((p.dailyTasks || []).flatMap((t) => [t.assigneeId, t.createdBy, ...(t.reassignHistory || []).flatMap((r) => [r.fromId, r.toId, r.by])]).filter(Boolean))];
+  const names = Object.fromEntries((await User.find({ _id: { $in: ids } }, { name: 1 }).lean()).map((u) => [u._id, u.name]));
+  project.dailyTasks = (project.dailyTasks || []).map((t) => ({
+    ...t,
+    assigneeName: names[t.assigneeId] || 'Unassigned',
+    reassignHistory: (t.reassignHistory || []).map((r) => ({ ...r, fromName: names[r.fromId] || 'Unassigned', toName: names[r.toId] || 'Unassigned', byName: names[r.by] || '' })),
+  }));
+  return project;
+}
+
+// Head assigns a daily task to a team member.
+r.post('/:id/tasks', requireHead, ah(async (req, res) => {
+  const p = await Project.findById(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  const title = clean(req.body.title);
+  if (!title) return res.status(400).json({ error: 'Task title is required' });
+  const assigneeId = req.body.assigneeId || null;
+  if (!(await validEngineer(assigneeId))) return res.status(400).json({ error: 'Select a valid, active team member' });
+  p.dailyTasks.push({
+    title, details: clean(req.body.details) || '', dueDate: clean(req.body.dueDate) || '',
+    status: TASK_STATUSES.includes(req.body.status) ? req.body.status : 'To Do',
+    assigneeId, createdBy: req.user._id,
+  });
+  await p.save();
+  if (assigneeId) await notify(assigneeId, { type: 'task', title: 'New task assigned', message: `${title} — ${p.name}`, link: `/projects/${p._id}` });
+  await syncTasksToHandover(p);
+  res.status(201).json({ project: await enrichedProject(p) });
+}));
+
+// Head edits a task's details.
+r.put('/:id/tasks/:taskId', requireHead, ah(async (req, res) => {
+  const p = await Project.findById(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  const t = p.dailyTasks.id(req.params.taskId);
+  if (!t) return res.status(404).json({ error: 'Task not found' });
+  if (req.body.title !== undefined) { const v = clean(req.body.title); if (!v) return res.status(400).json({ error: 'Task title is required' }); t.title = v; }
+  if (req.body.details !== undefined) t.details = clean(req.body.details);
+  if (req.body.dueDate !== undefined) t.dueDate = clean(req.body.dueDate);
+  if (req.body.status !== undefined && TASK_STATUSES.includes(req.body.status)) { t.status = req.body.status; t.completedAt = req.body.status === 'Done' ? new Date() : undefined; }
+  await p.save();
+  await syncTasksToHandover(p);
+  res.json({ project: await enrichedProject(p) });
+}));
+
+// Head reassigns a task to another member (records history + notifies both).
+r.post('/:id/tasks/:taskId/reassign', requireHead, ah(async (req, res) => {
+  const p = await Project.findById(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  const t = p.dailyTasks.id(req.params.taskId);
+  if (!t) return res.status(404).json({ error: 'Task not found' });
+  const toId = req.body.assigneeId || null;
+  if (!(await validEngineer(toId))) return res.status(400).json({ error: 'Select a valid, active team member' });
+  const fromId = t.assigneeId || null;
+  if (fromId === toId) return res.status(400).json({ error: 'Task is already assigned to that member' });
+  t.reassignHistory.push({ fromId, toId, at: new Date(), by: req.user._id });
+  t.assigneeId = toId;
+  await p.save();
+  if (toId) await notify(toId, { type: 'task', title: 'Task assigned to you', message: `${t.title} — ${p.name}`, link: `/projects/${p._id}` });
+  if (fromId) await notify(fromId, { type: 'task', title: 'Task reassigned', message: `"${t.title}" has been moved to another team member.`, link: `/projects/${p._id}` });
+  await syncTasksToHandover(p);
+  res.json({ project: await enrichedProject(p) });
+}));
+
+// Assignee (or Head) updates a task's status.
+r.patch('/:id/tasks/:taskId/status', ah(async (req, res) => {
+  const p = await findVisible(req.user, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  const t = p.dailyTasks.id(req.params.taskId);
+  if (!t) return res.status(404).json({ error: 'Task not found' });
+  if (!isHead(req.user) && t.assigneeId !== req.user._id) return res.status(403).json({ error: 'You can only update your own tasks' });
+  if (!TASK_STATUSES.includes(req.body.status)) return res.status(400).json({ error: 'Invalid status' });
+  const old = t.status;
+  t.status = req.body.status;
+  t.completedAt = req.body.status === 'Done' ? new Date() : undefined;
+  await p.save();
+  if (old !== t.status && !isHead(req.user)) await notifyHeads({ type: 'task', title: 'Task updated', message: `${req.user.name}: "${t.title}" → ${t.status} (${p.name})`, link: `/projects/${p._id}` });
+  await syncTasksToHandover(p);
+  res.json({ project: await enrichedProject(p) });
+}));
+
+// Head deletes a task.
+r.delete('/:id/tasks/:taskId', requireHead, ah(async (req, res) => {
+  const p = await Project.findById(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  const t = p.dailyTasks.id(req.params.taskId);
+  if (!t) return res.status(404).json({ error: 'Task not found' });
+  p.dailyTasks.pull(req.params.taskId);
+  await p.save();
+  await syncTasksToHandover(p);
+  res.json({ project: await enrichedProject(p) });
 }));
 
 export default r;
