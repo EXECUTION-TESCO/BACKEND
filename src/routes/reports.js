@@ -34,7 +34,16 @@ export function reportFilter(user, q) {
 }
 export const findReports = (user, q) => Report.find(reportFilter(user, q)).sort({ reportDate: -1, createdAt: -1 }).limit(5000);
 
-r.get('/', ah(async (req, res) => res.json(await findReports(req.user, req.query))));
+r.get('/', ah(async (req, res) => {
+  const list = (await findReports(req.user, req.query)).map((x) => x.toJSON());
+  // Resolve the client name per report from its project (covers reports saved before `client` existed).
+  const ids = [...new Set(list.map((r) => r.projectId).filter(Boolean))];
+  if (ids.length) {
+    const byId = Object.fromEntries((await Project.find({ _id: { $in: ids } }, { client: 1 }).lean()).map((p) => [p._id, p.client]));
+    for (const r of list) if (!r.client) r.client = byId[r.projectId] || '';
+  }
+  res.json(list);
+}));
 
 r.get('/:id', ah(async (req, res) => {
   const rep = await Report.findOne({ _id: req.params.id, ...visible(req.user) });
@@ -75,7 +84,7 @@ r.post('/', upload.array('photos', 20), ah(async (req, res) => {
   const materialRequired = clean(b.materialRequired);
   const rep = await Report.create({
     _id: reportId,
-    engineerId: req.user._id, engineerName: req.user.name, projectId: p._id, projectName: p.name, siteLocation: p.location,
+    engineerId: req.user._id, engineerName: req.user.name, projectId: p._id, projectName: p.name, client: p.client || '', siteLocation: p.location,
     reportDate: date,
     todayProgress: clean(b.todayProgress), workCompleted: clean(b.workCompleted), tomorrowPlan: clean(b.tomorrowPlan),
     materialRequired, materialStatus: materialRequired ? (MATERIAL_STATUSES.includes(b.materialStatus) ? b.materialStatus : 'Required') : '',

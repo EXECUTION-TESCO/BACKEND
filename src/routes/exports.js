@@ -2,6 +2,7 @@ import { Router } from 'express';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { requireAuth } from '../auth.js';
+import { Project } from '../db.js';
 import { findReports } from './reports.js';
 import { ah } from '../utils.js';
 import { todayStr } from '../utils.js';
@@ -11,10 +12,20 @@ r.use(requireAuth);
 
 const fmt = (d) => (d ? d.split('-').reverse().join('-') : '');
 
+// Resolve the client name per report from its project (covers reports saved before `client` existed).
+async function withClient(list) {
+  const ids = [...new Set(list.map((x) => x.projectId).filter(Boolean))];
+  if (!ids.length) return list;
+  const byId = Object.fromEntries((await Project.find({ _id: { $in: ids } }, { client: 1 }).lean()).map((p) => [p._id, p.client]));
+  for (const x of list) if (!x.client) x.client = byId[x.projectId] || '';
+  return list;
+}
+
 const COLS = [
   { key: 'reportDate', header: 'Date', width: 12, get: (x) => fmt(x.reportDate) },
   { key: 'engineerName', header: 'Engineer', width: 16 },
   { key: 'projectName', header: 'Site / Project', width: 22 },
+  { key: 'client', header: 'Client', width: 20 },
   { key: 'todayProgress', header: "Today's Work Progress", width: 40 },
   { key: 'workCompleted', header: 'Work Completed Today', width: 36 },
   { key: 'tomorrowPlan', header: "Tomorrow's Plan", width: 32 },
@@ -29,7 +40,7 @@ const COLS = [
 const val = (c, x) => (c.get ? c.get(x) : x[c.key] ?? '');
 
 r.get('/reports', ah(async (req, res) => {
-  const list = (await findReports(req.user, req.query)).map((x) => x.toJSON());
+  const list = await withClient((await findReports(req.user, req.query)).map((x) => x.toJSON()));
   const name = `daily-reports-${req.query.date || req.query.from || todayStr()}`;
 
   if (req.query.format === 'pdf') {
@@ -43,10 +54,11 @@ r.get('/reports', ah(async (req, res) => {
     doc.moveDown(0.6);
 
     const cols = [
-      { h: 'Date', w: 58, v: (x) => fmt(x.reportDate) },
-      { h: 'Engineer', w: 70, v: (x) => x.engineerName },
-      { h: 'Site', w: 85, v: (x) => x.projectName },
-      { h: "Today's Work", w: 170, v: (x) => [x.todayProgress, x.workCompleted && `Done: ${x.workCompleted}`].filter(Boolean).join('\n') },
+      { h: 'Date', w: 54, v: (x) => fmt(x.reportDate) },
+      { h: 'Engineer', w: 64, v: (x) => x.engineerName },
+      { h: 'Site', w: 78, v: (x) => x.projectName },
+      { h: 'Client', w: 78, v: (x) => x.client || '-' },
+      { h: "Today's Work", w: 150, v: (x) => [x.todayProgress, x.workCompleted && `Done: ${x.workCompleted}`].filter(Boolean).join('\n') },
       { h: "Tomorrow's Plan", w: 120, v: (x) => x.tomorrowPlan },
       { h: 'Material', w: 95, v: (x) => (x.materialRequired ? `${x.materialRequired} (${x.materialStatus})` : '-') },
       { h: 'Issues / Remarks', w: 115, v: (x) => [x.issues, x.remarks].filter(Boolean).join('\n') },

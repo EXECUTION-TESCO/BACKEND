@@ -98,6 +98,7 @@ const reportSchema = new mongoose.Schema({
   engineerName: String,
   projectId: { type: String, index: true },
   projectName: String,
+  client: String,            // client name copied from the project (for lists & PDF)
   siteLocation: String,
   reportDate: { type: String, index: true }, // YYYY-MM-DD (portal timezone)
   todayProgress: String,
