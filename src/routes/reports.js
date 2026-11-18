@@ -7,9 +7,30 @@ import { requireAuth } from '../auth.js';
 import { MATERIAL_STATUSES, PROJECT_STATUSES } from '../config.js';
 import { clean, todayStr, ah } from '../utils.js';
 import { notifyHeads, notify } from '../notify.js';
+import { handoverModels, logActivity } from '../handover-model.js';
 
 const r = Router();
 r.use(requireAuth);
+
+const HO = handoverModels(process.env.HANDOVER_PREFIX || 'ho_');
+
+// Mirror a daily update onto its source Sales handover (so Sales can follow progress + export),
+// and log it on the handover history. Non-fatal — a failure here never blocks the report.
+async function mirrorUpdateToHandover(project, rep, actor) {
+  if (!project.handoverId) return;
+  try {
+    const snap = {
+      reportId: String(rep._id), reportDate: rep.reportDate, engineerName: rep.engineerName,
+      projectStatus: rep.projectStatus, progressPercent: rep.progressPercent,
+      todayProgress: rep.todayProgress, workCompleted: rep.workCompleted, tomorrowPlan: rep.tomorrowPlan,
+      materialRequired: rep.materialRequired, materialStatus: rep.materialStatus, issues: rep.issues, remarks: rep.remarks,
+      photoCount: (rep.photos || []).length, createdAt: rep.createdAt || new Date(),
+    };
+    await HO.Handover.updateOne({ _id: project.handoverId }, { $push: { executionUpdates: { $each: [snap], $position: 0, $slice: 500 } } });
+    const h = await HO.Handover.findById(project.handoverId);
+    if (h) await logActivity(HO, h, { type: 'update', message: `Daily update (${rep.reportDate}) — ${rep.projectStatus}${rep.progressPercent != null ? ` · ${rep.progressPercent}%` : ''}`, by: actor });
+  } catch (e) { /* non-fatal */ }
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -100,6 +121,8 @@ r.post('/', upload.array('photos', 20), ah(async (req, res) => {
   await notifyHeads({ type: 'report', title: `Daily update: ${p.name}`, message: `${req.user.name} submitted today's update${photos.length ? ` with ${photos.length} photo(s)` : ''}.`, link: `/reports/${rep._id}` }, req.user._id);
   if (materialRequired && rep.materialStatus === 'Required') await notifyHeads({ type: 'material', title: `Material requested – ${p.name}`, message: `${req.user.name}: ${materialRequired}`, link: `/reports/${rep._id}` }, req.user._id);
   if (oldStatus !== projectStatus) await notifyHeads({ type: 'status', title: 'Project status changed', message: `${p.name}: ${oldStatus} → ${projectStatus}`, link: `/projects/${p._id}` }, req.user._id);
+  // Mirror the update onto the Sales handover (progress visible to Sales + exportable).
+  await mirrorUpdateToHandover(p, rep, { id: req.user._id, name: req.user.name, role: req.user.role, portal: 'execution' });
   res.status(201).json(rep);
 }));
 

@@ -130,7 +130,7 @@ r.post('/', requireHead, ah(async (req, res) => {
     assignedAt: f.engineerId ? new Date() : undefined,
     createdBy: req.user._id,
   });
-  if (p.engineerId) await notify(p.engineerId, { type: 'assigned', title: 'New project assigned', message: `${p.name}${p.location ? ' – ' + p.location : ''} has been assigned to you.`, link: `/projects/${p._id}` });
+  if (p.engineerId) await notify(p.engineerId, { type: 'assigned', title: `New project assigned (${p.name})`, message: `${p.name}${p.location ? ' – ' + p.location : ''} has been assigned to you.`, link: `/projects/${p._id}` });
   res.status(201).json((await decorateProjects([p]))[0]);
 }));
 
@@ -151,7 +151,7 @@ r.put('/:id', requireHead, ah(async (req, res) => {
 
   if (reassigned) {
     if (p.engineerId) {
-      await notify(p.engineerId, { type: 'assigned', title: 'Project assigned to you', message: `${p.name} has been ${before.engineerId ? 're' : ''}assigned to you.`, link: `/projects/${p._id}` });
+      await notify(p.engineerId, { type: 'assigned', title: `Project assigned to you (${p.name})`, message: `${p.name} has been ${before.engineerId ? 're' : ''}assigned to you.`, link: `/projects/${p._id}` });
       const eng = await User.findById(p.engineerId, { name: 1, phone: 1 }).lean();
       await logHandoverAssignment(p, eng, req.user); // record on the Sales handover history (with mobile)
     }
