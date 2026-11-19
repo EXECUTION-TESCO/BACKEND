@@ -11,10 +11,13 @@ r.use(requireAuth);
 const HO = handoverModels(process.env.HANDOVER_PREFIX || 'ho_');
 const MAT = materialModels();
 
-// Material requirements the current user raised, whose Procurement status changed and
-// the user hasn't seen yet (requesterSeen === false). Shown in everyone's bell.
+// Material requirements whose Procurement decision (Approved / Rejected / PO Created) the
+// user hasn't seen yet. The Execution Head is notified of EVERY decision (they oversee all
+// requests); a team member only of the requests they raised.
 async function materialItems(user) {
-  const list = await MAT.MaterialRequest.find({ 'createdBy.id': user._id, requesterSeen: false }).sort({ updatedAt: -1 }).limit(50);
+  const q = { requesterSeen: false };
+  if (user.role !== 'head') q['createdBy.id'] = user._id;
+  const list = await MAT.MaterialRequest.find(q).sort({ updatedAt: -1 }).limit(50);
   return list.map((n) => ({
     id: 'mr-' + (n._id || n.id),
     type: 'material',
@@ -70,7 +73,7 @@ r.get('/', ah(async (req, res) => {
 r.post('/read-all', ah(async (req, res) => {
   await Notification.updateMany({ userId: req.user._id, read: false }, { $set: { read: true } });
   if (req.user.role === 'head') await HO.HandoverNotification.updateMany({ audience: 'execution', read: false }, { $set: { read: true } });
-  await MAT.MaterialRequest.updateMany({ 'createdBy.id': req.user._id, requesterSeen: false }, { $set: { requesterSeen: true } });
+  await MAT.MaterialRequest.updateMany(req.user.role === 'head' ? { requesterSeen: false } : { 'createdBy.id': req.user._id, requesterSeen: false }, { $set: { requesterSeen: true } });
   req.user.pendingSeenDate = todayStr();
   await req.user.save();
   res.json({ ok: true });
@@ -83,7 +86,8 @@ r.post('/:id/read', ah(async (req, res) => {
   } else if (req.params.id.startsWith('ho-')) {
     await HO.HandoverNotification.updateOne({ _id: req.params.id.slice(3) }, { $set: { read: true } });
   } else if (req.params.id.startsWith('mr-')) {
-    await MAT.MaterialRequest.updateOne({ _id: req.params.id.slice(3), 'createdBy.id': req.user._id }, { $set: { requesterSeen: true } });
+    const mf = req.user.role === 'head' ? { _id: req.params.id.slice(3) } : { _id: req.params.id.slice(3), 'createdBy.id': req.user._id };
+    await MAT.MaterialRequest.updateOne(mf, { $set: { requesterSeen: true } });
   } else {
     await Notification.updateOne({ _id: req.params.id, userId: req.user._id }, { $set: { read: true } });
   }
