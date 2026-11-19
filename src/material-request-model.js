@@ -6,7 +6,8 @@
 import mongoose from 'mongoose';
 import crypto from 'crypto';
 
-export const MATERIAL_REQUEST_STATUSES = ['Requested', 'Ordered', 'Delivered', 'Rejected'];
+// Approval workflow: Pending Approval → Approved → PO Created, or → Rejected.
+export const MATERIAL_REQUEST_STATUSES = ['Pending Approval', 'Approved', 'PO Created', 'Rejected'];
 const newId = () => crypto.randomUUID();
 const toJSON = { virtuals: false, versionKey: false, transform(doc, ret) { ret.id = ret._id; delete ret._id; return ret; } };
 
@@ -30,10 +31,12 @@ export function materialModels() {
     neededBy: { type: String, default: '' },             // YYYY-MM-DD
     notes: { type: String, default: '' },
     // Procurement workflow
-    status: { type: String, enum: MATERIAL_REQUEST_STATUSES, default: 'Requested', index: true },
+    status: { type: String, enum: MATERIAL_REQUEST_STATUSES, default: 'Pending Approval', index: true },
     rejectReason: { type: String, default: '' },
-    poRef: { type: String, default: '' },                // PO number once ordered / converted
-    createdBy: { id: String, name: String, role: String, portal: String },
+    poRef: { type: String, default: '' },                // PO number once a PO is created
+    createdBy: { id: String, name: String, role: String, portal: String },   // Execution requester
+    decidedBy: { id: String, name: String, role: String, portal: String },   // Purchase Manager who approved/rejected/created the PO
+    decidedAt: Date,
     statusLog: [{ _id: false, to: String, by: String, portal: String, at: Date, note: String }],
     // Cross-portal "unread" flags (each portal clears its own)
     procurementSeen: { type: Boolean, default: false },  // false => new/updated for Procurement

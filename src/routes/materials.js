@@ -46,10 +46,10 @@ r.post('/', ah(async (req, res) => {
     projectId: p._id, projectName: p.name, handoverRef: p.handoverRef || null,
     material, spec: clean(b.spec) || '', qty: Number(b.qty) || 0, unit: clean(b.unit) || '',
     neededBy: clean(b.neededBy) || '', notes: clean(b.notes) || '',
-    status: 'Requested',
+    status: 'Pending Approval',
     createdBy: actorOf(req.user),
-    statusLog: [{ to: 'Requested', by: req.user.name, portal: 'execution', at: new Date(), note: '' }],
-    procurementSeen: false,  // new for Procurement
+    statusLog: [{ to: 'Pending Approval', by: req.user.name, portal: 'execution', at: new Date(), note: 'Request raised' }],
+    procurementSeen: false,  // new / pending for Procurement
     requesterSeen: true,
   });
   res.status(201).json({ request: doc.toJSON() });
@@ -66,7 +66,7 @@ r.delete('/:id', ah(async (req, res) => {
   const doc = await M.MaterialRequest.findById(req.params.id);
   if (!doc) return res.status(404).json({ error: 'Request not found' });
   if (!isHead(req.user) && (doc.createdBy && doc.createdBy.id) !== req.user._id) return res.status(403).json({ error: 'Not allowed' });
-  if (doc.status !== 'Requested') return res.status(400).json({ error: `A "${doc.status}" requirement can no longer be withdrawn` });
+  if (doc.status !== 'Pending Approval') return res.status(400).json({ error: `A "${doc.status}" requirement can no longer be withdrawn` });
   await doc.deleteOne();
   res.json({ ok: true });
 }));

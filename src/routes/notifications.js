@@ -18,7 +18,7 @@ async function materialItems(user) {
   return list.map((n) => ({
     id: 'mr-' + (n._id || n.id),
     type: 'material',
-    title: `Material ${n.status.toLowerCase()} — ${n.material}`,
+    title: `Material ${n.status} — ${n.material}`,
     message: `${n.projectName || 'Project'}${n.poRef ? ' · PO ' + n.poRef : ''}${n.status === 'Rejected' && n.rejectReason ? ' · ' + n.rejectReason : ''}`,
     read: false,
     createdAt: n.updatedAt,
