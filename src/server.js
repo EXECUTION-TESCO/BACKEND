@@ -16,6 +16,7 @@ import exportRoutes from './routes/exports.js';
 import designationRoutes from './routes/designations.js';
 import handoverRoutes from './routes/handovers.js';
 import materialRoutes from './routes/materials.js';
+import designRequestRoutes from './routes/design-requests.js';
 import { handoverModels } from './handover-model.js';
 import { reconcileAcceptedHandovers } from './handover-projects.js';
 import { todayStr } from './utils.js';
@@ -38,6 +39,7 @@ app.use('/api/exports', exportRoutes);
 app.use('/api/designations', designationRoutes);
 app.use('/api/handovers', handoverRoutes);
 app.use('/api/materials', materialRoutes);
+app.use('/api/design-requests', designRequestRoutes);
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
 // Serve the built frontend (Frontend/dist) when present -> one server in production
