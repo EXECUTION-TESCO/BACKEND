@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../auth.js';
 import { clean, ah } from '../utils.js';
+import { Project } from '../db.js';
 import { designModels, nextDesignReqId } from '../design-bridge-model.js';
 
 const r = Router();
@@ -62,6 +63,13 @@ r.post('/', ah(async (req, res) => {
   if (!projectName) return res.status(400).json({ error: 'Enter the project name' });
   if (!requirement && !clean(b.description)) return res.status(400).json({ error: 'Describe the design requirement' });
 
+  // Project-wise assignee: the engineer assigned to the linked project (so the Design CRM can
+  // notify exactly that team member), falling back to the person raising the request.
+  let assigneeId = req.user._id;
+  if (clean(b.execProjectId)) {
+    const p = await Project.findById(clean(b.execProjectId), { engineerId: 1 }).lean();
+    if (p && p.engineerId) assigneeId = p.engineerId;
+  }
   for (let i = 0; i < 50; i++) {
     try {
       const id = await nextDesignReqId(D.DesignRequest);
@@ -71,7 +79,7 @@ r.post('/', ah(async (req, res) => {
         service: clean(b.service), requirement, description: clean(b.description),
         priority: clean(b.priority) || 'Medium', dueDate: clean(b.dueDate), location: clean(b.location),
         requestFrom: 'Execution Team', requestedBy: `${req.user.name} (${PORTAL})`, requestedByUser: req.user.name,
-        execProjectId: clean(b.execProjectId), handoverRef: clean(b.handoverRef),
+        execProjectId: clean(b.execProjectId), execAssigneeId: assigneeId, handoverRef: clean(b.handoverRef),
         history: [{ title: `Design request raised from ${PORTAL}`, time: nowStr(), desc: `${projectName}${b.handoverRef ? ' (' + clean(b.handoverRef) + ')' : ''} — ${requirement || clean(b.description)}` }],
       });
       // Notify the Design Head (shared design_notifications collection).

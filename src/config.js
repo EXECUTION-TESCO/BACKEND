@@ -35,3 +35,7 @@ export const ROLES = { HEAD: 'head', ENGINEER: 'engineer' }; // Admin = Executio
 export const PROJECT_STATUSES = ['Not Started', 'Work In Progress', 'On Hold', 'Material Pending', 'Completed', 'Delayed'];
 export const PRIORITIES = ['Low', 'Medium', 'High', 'Urgent'];
 export const MATERIAL_STATUSES = ['Required', 'Ordered', 'Delivered'];
+// Fixed work-activity list for the daily update (Today's Work & Tomorrow's Plan).
+export const WORK_ACTIVITIES = ['Site Surveying', 'Site Marking', 'Soil Excavation', 'Foundation Work', 'Flooring Work', 'Fabrication Work', 'Painting', 'Erection Work', 'Sheet Measurement', 'Sheet Installation'];
+// Material categories for the Material Requirements form.
+export const MATERIAL_CATEGORIES = ['Sheet Material', 'Steel Material', 'Civil Material'];

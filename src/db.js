@@ -101,6 +101,9 @@ const reportSchema = new mongoose.Schema({
   client: String,            // client name copied from the project (for lists & PDF)
   siteLocation: String,
   reportDate: { type: String, index: true }, // YYYY-MM-DD (portal timezone)
+  // Selected work activities (from the fixed list) for today and tomorrow — multiple allowed.
+  todayActivities: { type: [String], default: [] },
+  tomorrowActivities: { type: [String], default: [] },
   todayProgress: String,
   workCompleted: String,
   tomorrowPlan: String,
@@ -143,6 +146,21 @@ const designationSchema = new mongoose.Schema({
   createdBy: String,
 }, opts('designations'));
 
+// A work schedule the Execution Head shares with ONE team member (date-wise history kept).
+const workScheduleSchema = new mongoose.Schema({
+  _id: idField,
+  projectId: { type: String, index: true },
+  projectName: String,
+  assigneeId: { type: String, index: true },   // the team member it is shared with
+  assigneeName: String,
+  workDetails: { type: String, default: '' },
+  startDate: { type: String, default: '' },               // YYYY-MM-DD
+  expectedCompletionDate: { type: String, default: '' },  // YYYY-MM-DD
+  instructions: { type: String, default: '' },
+  createdBy: { id: String, name: String },
+}, opts('work_schedules'));
+workScheduleSchema.index({ assigneeId: 1, createdAt: -1 });
+
 export const DEFAULT_DESIGNATIONS = ['FABRICATION ENGINEER', 'TECHNO COMMERCIAL MANAGER', 'SENIOR SITE ENGINEER'];
 
 export const User = mongoose.model('User', userSchema);
@@ -151,6 +169,7 @@ export const Project = mongoose.model('Project', projectSchema);
 export const Report = mongoose.model('Report', reportSchema);
 export const Comment = mongoose.model('Comment', commentSchema);
 export const Notification = mongoose.model('Notification', notificationSchema);
+export const WorkScheduleShare = mongoose.model('WorkScheduleShare', workScheduleSchema);
 
 let bucket;
 // Site photos are stored in MongoDB GridFS (bucket "ep_photos"), so they survive redeploys.
@@ -170,7 +189,7 @@ export async function connectDB() {
   try { await db.collection(P + 'projects').dropIndex('handoverId_1'); } catch { /* not present — fine */ }
   // Index building must never crash startup — the app works without them (idempotency is enforced
   // in code too). Sync each model independently and only warn on failure.
-  await Promise.all([User, Project, Report, Comment, Notification, Designation].map(
+  await Promise.all([User, Project, Report, Comment, Notification, Designation, WorkScheduleShare].map(
     (m) => m.syncIndexes().catch((e) => console.warn(`[index] ${m.modelName}: ${e.message}`))
   ));
   // make sure the standard designations exist (never duplicates, never removes custom ones)

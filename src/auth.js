@@ -25,8 +25,8 @@ export function signToken(user) {
 function readToken(req) {
   const h = req.headers.authorization || '';
   if (h.startsWith('Bearer ')) return h.slice(7);
-  // only photo links (<img src>) may pass the token in the URL
-  if (req.method === 'GET' && req.query.token && /\/photos\//.test(req.path)) return String(req.query.token);
+  // only photo and BOQ document links (<img>/<a>) may pass the token in the URL
+  if (req.method === 'GET' && req.query.token && /\/(photos|boq)\//.test(req.path)) return String(req.query.token);
   return null;
 }
 

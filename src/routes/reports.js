@@ -4,7 +4,7 @@ import mongoose from 'mongoose';
 import path from 'path';
 import { Report, Project, Comment, photoBucket, newId } from '../db.js';
 import { requireAuth } from '../auth.js';
-import { MATERIAL_STATUSES, PROJECT_STATUSES } from '../config.js';
+import { MATERIAL_STATUSES, PROJECT_STATUSES, WORK_ACTIVITIES } from '../config.js';
 import { clean, todayStr, ah } from '../utils.js';
 import { notifyHeads, notify } from '../notify.js';
 import { handoverModels, logActivity } from '../handover-model.js';
@@ -91,7 +91,8 @@ r.post('/', upload.array('photos', 20), ah(async (req, res) => {
   const p = await Project.findById(b.projectId);
   if (!p) return res.status(400).json({ error: 'Select a site / project' });
   if (req.user.role !== 'head' && p.engineerId !== req.user._id) return res.status(403).json({ error: 'This site is not assigned to you' });
-  if (!clean(b.todayProgress) && !clean(b.workCompleted)) return res.status(400).json({ error: "Fill in today's work progress" });
+  const hasTodayActs = (() => { try { const a = JSON.parse(b.todayActivities || '[]'); return Array.isArray(a) && a.length > 0; } catch { return false; } })();
+  if (!clean(b.todayProgress) && !clean(b.workCompleted) && !hasTodayActs) return res.status(400).json({ error: "Select today's work activity or fill in today's progress" });
 
   const date = todayStr();
   const reportId = newId();
@@ -103,10 +104,15 @@ r.post('/', upload.array('photos', 20), ah(async (req, res) => {
   const progress = b.progressPercent !== undefined && b.progressPercent !== '' ? Math.max(0, Math.min(100, Number(b.progressPercent) || 0)) : null;
   const projectStatus = PROJECT_STATUSES.includes(b.projectStatus) ? b.projectStatus : p.status;
   const materialRequired = clean(b.materialRequired);
+  // Work activities arrive as a JSON array (multipart). Keep only values from the fixed list.
+  const parseActs = (v) => { try { const a = JSON.parse(v || '[]'); return Array.isArray(a) ? a.filter((x) => WORK_ACTIVITIES.includes(x)) : []; } catch { return []; } };
+  const todayActivities = parseActs(b.todayActivities);
+  const tomorrowActivities = parseActs(b.tomorrowActivities);
   const rep = await Report.create({
     _id: reportId,
     engineerId: req.user._id, engineerName: req.user.name, projectId: p._id, projectName: p.name, client: p.client || '', siteLocation: p.location,
     reportDate: date,
+    todayActivities, tomorrowActivities,
     todayProgress: clean(b.todayProgress), workCompleted: clean(b.workCompleted), tomorrowPlan: clean(b.tomorrowPlan),
     materialRequired, materialStatus: materialRequired ? (MATERIAL_STATUSES.includes(b.materialStatus) ? b.materialStatus : 'Required') : '',
     issues: clean(b.issues), remarks: clean(b.remarks), progressPercent: progress, projectStatus, photos,

@@ -30,6 +30,13 @@ export function materialModels() {
     unit: { type: String, default: '' },
     neededBy: { type: String, default: '' },             // YYYY-MM-DD
     notes: { type: String, default: '' },
+    category: { type: String, default: '' },             // Sheet Material | Steel Material | Civil Material
+    // BOQ documents (Excel / PDF) stored in the shared "material_boq" GridFS bucket.
+    boq: [{ _id: false, fileId: String, filename: String, mime: String, size: Number, uploadedAt: Date, uploadedBy: String }],
+    // The Execution team member assigned to the project (so Procurement can notify the right
+    // person on a status change) and the post-PO delivery stage used for % progress.
+    assigneeId: { type: String, default: '' },
+    deliveryStage: { type: String, default: '' },        // Ordered | Processing | Dispatched | In Transit | Reached Site
     // Procurement workflow
     status: { type: String, enum: MATERIAL_REQUEST_STATUSES, default: 'Pending Approval', index: true },
     rejectReason: { type: String, default: '' },
